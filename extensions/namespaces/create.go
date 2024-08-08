@@ -6,6 +6,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
+	coreV1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	kerr "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kubeUnstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	kwait "k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
+
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	v1 "github.com/rancher/shepherd/clients/rancher/v1"
@@ -13,13 +22,6 @@ import (
 	"github.com/rancher/shepherd/extensions/kubeapi/namespaces"
 	"github.com/rancher/shepherd/pkg/api/scheme"
 	"github.com/rancher/shepherd/pkg/wait"
-	coreV1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	kubeUnstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	kwait "k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/watch"
 )
 
 const (
@@ -48,45 +50,49 @@ func CreateNamespace(client *rancher.Client, namespaceName, containerDefaultReso
 
 	steveClient, err := client.Steve.ProxyDownstream(project.ClusterID)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "steve client instantiation for the downstream")
 	}
 
 	nameSpaceClient := steveClient.SteveType(NamespaceSteveType)
 
 	resp, err := nameSpaceClient.Create(namespace)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "steve client namespace")
 	}
 
 	adminClient, err := rancher.NewClient(client.RancherConfig.AdminToken, client.Session)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "admin client with the rancher admin token")
 	}
 
 	adminDynamicClient, err := adminClient.GetDownStreamClusterClient(project.ClusterID)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "dynamic interface for the downstream")
 	}
 
 	clusterRoleResource := adminDynamicClient.Resource(rbacv1.SchemeGroupVersion.WithResource("clusterroles"))
 	projectID := strings.Split(project.ID, ":")[1]
 
+	clusterRoleName := fmt.Sprintf("%s-namespaces-edit", projectID)
 	clusterRoleWatch, err := clusterRoleResource.Watch(context.TODO(), metav1.ListOptions{
-		FieldSelector:  "metadata.name=" + fmt.Sprintf("%s-namespaces-edit", projectID),
+		FieldSelector:  "metadata.name=" + clusterRoleName,
 		TimeoutSeconds: &defaults.WatchTimeoutSeconds,
 	})
-
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cluster role resource watcher with the meta name projectID-namespace-edit")
 	}
 
 	err = wait.WatchWait(clusterRoleWatch, func(event watch.Event) (ready bool, err error) {
 		clusterRole := &rbacv1.ClusterRole{}
 		err = scheme.Scheme.Convert(event.Object.(*kubeUnstructured.Unstructured), clusterRole, event.Object.(*kubeUnstructured.Unstructured).GroupVersionKind())
-
 		if err != nil {
-			return false, err
+			return false, errors.Wrap(err, "scheme convert from kube unstructed to cluster role")
 		}
+
+		// clusterrole, err = clusterRoleResource.Get(context.Background(), clusterRoleName, metav1.GetOptions{})
+		// if err != nil {
+		// 	return false, errors.Wrap(err, "scheme convert from kube unstructed to cluster role")
+		// }
 
 		for _, rule := range clusterRole.Rules {
 			for _, resourceName := range rule.ResourceNames {
@@ -97,9 +103,8 @@ func CreateNamespace(client *rancher.Client, namespaceName, containerDefaultReso
 		}
 		return false, nil
 	})
-
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "wait for watcher error")
 	}
 
 	client.Session.RegisterCleanupFunc(func() error {
@@ -110,7 +115,7 @@ func CreateNamespace(client *rancher.Client, namespaceName, containerDefaultReso
 
 		nameSpaceClient = steveClient.SteveType(NamespaceSteveType)
 		err := nameSpaceClient.Delete(resp)
-		if errors.IsNotFound(err) {
+		if kerr.IsNotFound(err) {
 			return nil
 		}
 		if err != nil {
@@ -122,7 +127,6 @@ func CreateNamespace(client *rancher.Client, namespaceName, containerDefaultReso
 			FieldSelector:  "metadata.name=" + resp.Name,
 			TimeoutSeconds: &defaults.WatchTimeoutSeconds,
 		})
-
 		if err != nil {
 			return err
 		}
