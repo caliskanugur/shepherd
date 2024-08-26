@@ -1,4 +1,7 @@
+[![Go Report Card](https://goreportcard.com/badge/github.com/rancher/shepherd)](https://goreportcard.com/report/github.com/rancher/shepherd)
+
 # Rancher Test Framework
+
 
 The Rancher Test Framework provides tools for writing integrations and validation tests.  The framework manages interactions with the external services being tested and aids in cleaning up resources after a test is completed.  The framework is organized into three disciplines: framework, clients, and extensions.  The framework consists of a few core libraries used to make it easy to write homologous tests. See [extensions](#extensions) and [clients](#clients) for more details.
 
